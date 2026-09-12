@@ -13,12 +13,28 @@ body{margin:0;font-family:sans-serif;background:#000432;color:#fff;display:flex;
 .item .dl{color:#fff;text-decoration:none;font-size:28px;cursor:pointer}
 .item .del, .item .ren{color:#fff;font-size:26px;cursor:pointer;text-decoration:none}
 .cat{border:1px solid #fff;border-radius:0;padding:16px;flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+.cat.collapsed{flex:0 0 220px;padding:12px;overflow-y:visible}
 .cat-title{margin:0 0 8px;font-size:16px;letter-spacing:1px;color:#fff;text-transform:uppercase;font-weight:600;text-align:center}
+.cat-title.toggle{cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;margin:0}
+.cat-title .chevron{font-size:11px}
+.cat-title .count{font-size:12px;opacity:.7;font-weight:400;text-transform:none;letter-spacing:0}
+.cat-body{display:flex;flex-direction:column;gap:6px}
+.cat.collapsed .cat-body{display:none}
+.tree-folder{display:flex;flex-direction:column;gap:6px}
+.tree-folder-title{display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;border:1px solid #fff;border-radius:6px}
+.tree-folder-title .chevron{font-size:10px;width:10px;display:inline-block}
+.tree-folder-title .folder-icon{font-size:14px}
+.tree-children{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.tree-folder.collapsed > .tree-children{display:none}
+.tree-item{padding:6px 12px}
 #storage{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);color:#fff;font-size:12px;text-align:center;width:220px}
 #storage .bar{width:100%;height:6px;border:1px solid #fff;border-radius:4px;margin-top:4px;overflow:hidden}
 #storage .fill{height:100%;background:#fff}
-#bar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%)}
+#bar{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:12px}
 #bar label{background:#000432;color:#fff;border:1px solid #fff;padding:14px 28px;border-radius:32px;cursor:pointer;font-size:16px}
+#upload-progress{position:fixed;bottom:140px;left:50%;transform:translateX(-50%);color:#fff;font-size:12px;text-align:center;width:240px}
+#upload-progress .bar{width:100%;height:6px;border:1px solid #fff;border-radius:4px;margin-top:4px;overflow:hidden}
+#upload-progress .fill{height:100%;background:#fff;width:0%}
 </style>
 </head>
 <body>
@@ -30,13 +46,19 @@ body{margin:0;font-family:sans-serif;background:#000432;color:#fff;display:flex;
 <div id="bar">
   <label for="f">⬆ Upload</label>
   <input id="f" type="file" multiple style="display:none" onchange="upload(this.files)">
+  <label for="folderInput">📁 Upload Folder</label>
+  <input id="folderInput" type="file" webkitdirectory directory multiple style="display:none" onchange="uploadFolder(this.files)">
+</div>
+<div id="upload-progress" style="display:none">
+  <div id="upload-progress-text">Uploading…</div>
+  <div class="bar"><div class="fill" id="upload-progress-fill" style="width:0%"></div></div>
 </div>
 <script>
-const sb = supabase.createClient(
-  'https://vrtzhpnvijjzvbsewdmb.supabase.co',
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZydHpocG52aWpqenZic2V3ZG1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3OTQ0NjIsImV4cCI6MjEwMDM3MDQ2Mn0.QD0jcEKFRHo8Of0lfYbS6p1XKZRxGM9e2sYIpMsiPtI'
-);
+const SUPABASE_URL = 'https://vrtzhpnvijjzvbsewdmb.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZydHpocG52aWpqenZic2V3ZG1iIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3OTQ0NjIsImV4cCI6MjEwMDM3MDQ2Mn0.QD0jcEKFRHo8Of0lfYbS6p1XKZRxGM9e2sYIpMsiPtI';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const BUCKET = 'docs';
+const FOLDER_PREFIX = 'folderupload__';
 async function downloadFile(url, filename){
   try{
     const res = await fetch(url);
@@ -81,43 +103,194 @@ function updateStorageDisplay(usedBytes){
   document.getElementById('storage-text').textContent = `${formatBytes(usedBytes)} used · ${formatBytes(freeBytes)} free`;
   document.getElementById('storage-fill').style.width = pct + '%';
 }
+function buildFileTree(entries){
+  const root = { folders: {}, files: [] };
+  entries.forEach(e => {
+    const parts = e.name.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        node.files.push({ label: part, raw: e.raw });
+      } else {
+        if (!node.folders[part]) node.folders[part] = { folders: {}, files: [] };
+        node = node.folders[part];
+      }
+    }
+  });
+  return root;
+}
+function renderTreeNode(node, depth){
+  const container = document.createElement('div');
+  container.className = 'tree-level';
+  Object.keys(node.folders).sort().forEach(folderName => {
+    const folderData = node.folders[folderName];
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tree-folder collapsed';
+    const header = document.createElement('div');
+    header.className = 'tree-folder-title';
+    header.style.marginLeft = (depth * 16) + 'px';
+    header.innerHTML = `<span class="chevron">▶</span><span class="folder-icon">📁</span><span>${folderName}</span>`;
+    header.onclick = () => {
+      wrapper.classList.toggle('collapsed');
+      header.querySelector('.chevron').textContent = wrapper.classList.contains('collapsed') ? '▶' : '▼';
+    };
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+    children.appendChild(renderTreeNode(folderData, depth + 1));
+    wrapper.appendChild(header);
+    wrapper.appendChild(children);
+    container.appendChild(wrapper);
+  });
+  node.files.sort((a, b) => a.label.localeCompare(b.label)).forEach(f => {
+    const { data: { publicUrl } } = sb.storage.from(BUCKET).getPublicUrl(f.raw);
+    const div = document.createElement('div');
+    div.className = 'item tree-item';
+    div.style.marginLeft = (depth * 16) + 'px';
+    div.innerHTML = `<span>${f.label}</span><div class="actions"><span class="del" onclick="deleteFile('${f.raw}')" title="Delete">✕</span><span class="ren" onclick="renameFile('${f.raw}', '${f.label}')" title="Rename">✏️</span><span class="dl" onclick="downloadFile('${publicUrl}','${f.label}')" title="Download">⬇</span></div>`;
+    container.appendChild(div);
+  });
+  return container;
+}
 async function refresh(){
   const { data } = await sb.storage.from(BUCKET).list('', { sortBy: { column: 'created_at', order: 'desc' } });
   const list = document.getElementById('list');
   list.innerHTML = '';
   const cats = {};
     let totalBytes = 0;
-    (data || []).filter(f => f.id).forEach(f => {
-      const name = f.name.includes('_') ? f.name.slice(f.name.indexOf('_') + 1) : f.name;
-      const ext = name.includes('.') ? name.split('.').pop().toUpperCase() : 'FILE';
-      if (!cats[ext]) cats[ext] = [];
-      cats[ext].push({ raw: f.name, name });
-      totalBytes += (f.metadata && f.metadata.size) || 0;
-    });
-  Object.keys(cats).sort().forEach(ext => {
-    const section = document.createElement('div');
-    section.className = 'cat';
-    const header = document.createElement('h3');
-    header.className = 'cat-title';
-    header.textContent = ext;
-    section.appendChild(header);
-    cats[ext].forEach(f => {
-      const { data: { publicUrl } } = sb.storage.from(BUCKET).getPublicUrl(f.raw);
-      const div = document.createElement('div');
-            div.className = 'item';
-            div.innerHTML = `<span>${f.name}</span><div class="actions"><span class="del" onclick="deleteFile('${f.raw}')" title="Delete">✕</span><span class="ren" onclick="renameFile('${f.raw}', '${f.name}')" title="Rename">✏️</span><span class="dl" onclick="downloadFile('${publicUrl}','${f.name}')" title="Download">⬇</span></div>`;
-            section.appendChild(div);
-    });
-    list.appendChild(section);
+        const folderCats = new Set();
+        (data || []).filter(f => f.id).forEach(f => {
+          const stripped = f.name.includes('_') ? f.name.slice(f.name.indexOf('_') + 1) : f.name;
+          let cat, name;
+          if (stripped.startsWith(FOLDER_PREFIX)) {
+            const relPath = stripped.slice(FOLDER_PREFIX.length).split('---').join('/');
+            const slashIdx = relPath.indexOf('/');
+            if (slashIdx > -1) {
+              cat = relPath.slice(0, slashIdx).toUpperCase();
+              name = relPath.slice(slashIdx + 1);
+            } else {
+              cat = 'FOLDER';
+              name = relPath;
+            }
+            folderCats.add(cat);
+          } else {
+            name = stripped;
+            cat = name.includes('.') ? name.split('.').pop().toUpperCase() : 'FILE';
+          }
+          if (!cats[cat]) cats[cat] = [];
+          cats[cat].push({ raw: f.name, name });
+          totalBytes += (f.metadata && f.metadata.size) || 0;
+        });
+      Object.keys(cats).sort().forEach(cat => {
+        const section = document.createElement('div');
+        const isFolder = folderCats.has(cat);
+        section.className = isFolder ? 'cat collapsed' : 'cat';
+        const header = document.createElement('h3');
+        header.className = 'cat-title';
+        if (isFolder) {
+          header.classList.add('toggle');
+          header.innerHTML = `<span class="chevron">▶</span><span>${cat}</span><span class="count">(${cats[cat].length})</span>`;
+          header.onclick = () => {
+            section.classList.toggle('collapsed');
+            header.querySelector('.chevron').textContent = section.classList.contains('collapsed') ? '▶' : '▼';
+          };
+        } else {
+          header.textContent = cat;
+        }
+        section.appendChild(header);
+        const body = document.createElement('div');
+            body.className = 'cat-body';
+            if (isFolder) {
+              const tree = buildFileTree(cats[cat]);
+              body.appendChild(renderTreeNode(tree, 0));
+            } else {
+              cats[cat].forEach(f => {
+                const { data: { publicUrl } } = sb.storage.from(BUCKET).getPublicUrl(f.raw);
+                const div = document.createElement('div');
+                div.className = 'item';
+                div.innerHTML = `<span>${f.name}</span><div class="actions"><span class="del" onclick="deleteFile('${f.raw}')" title="Delete">✕</span><span class="ren" onclick="renameFile('${f.raw}', '${f.name}')" title="Rename">✏️</span><span class="dl" onclick="downloadFile('${publicUrl}','${f.name}')" title="Download">⬇</span></div>`;
+                body.appendChild(div);
+              });
+            }
+            section.appendChild(body);
+        list.appendChild(section);
       });
       updateStorageDisplay(totalBytes);
     }
 
-async function upload(files){
-  for (const f of [...files]) {
-    await sb.storage.from(BUCKET).upload(`${Date.now()}_${f.name}`, f);
+function xhrUpload(path, file, onProgress){
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodeURIComponent(path)}`, true);
+    xhr.setRequestHeader('Authorization', `Bearer ${SUPABASE_ANON_KEY}`);
+    xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`Upload failed: ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('Upload network error'));
+    xhr.send(file);
+  });
+}
+
+function showUploadProgress(){
+  document.getElementById('upload-progress').style.display = 'block';
+}
+function hideUploadProgress(){
+  document.getElementById('upload-progress').style.display = 'none';
+}
+function setUploadProgress(pct, label){
+  document.getElementById('upload-progress-fill').style.width = pct + '%';
+  document.getElementById('upload-progress-text').textContent = label || `Uploading... ${Math.round(pct)}%`;
+}
+
+async function uploadBatch(fileList){
+  const files = [...fileList];
+  const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+  const uploadedBytesByFile = files.map(() => 0);
+  showUploadProgress();
+  setUploadProgress(0);
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    const path = f.relPath || `${Date.now()}_${f.name}`;
+    try {
+      await xhrUpload(path, f, (loaded) => {
+        uploadedBytesByFile[i] = loaded;
+        const uploadedTotal = uploadedBytesByFile.reduce((sum, v) => sum + v, 0);
+        const pct = totalSize ? (uploadedTotal / totalSize) * 100 : 100;
+        setUploadProgress(pct);
+      });
+      uploadedBytesByFile[i] = f.size;
+    } catch (e) {
+      console.error(e);
+    }
   }
+  setUploadProgress(100, 'Done');
+  setTimeout(hideUploadProgress, 800);
   refresh();
+}
+
+async function upload(files){
+  const tagged = [...files].map((f) => {
+    f.relPath = `${Date.now()}_${f.name}`;
+    return f;
+  });
+  await uploadBatch(tagged);
+}
+
+async function uploadFolder(files){
+  const tagged = [...files].map((f) => {
+    const rel = (f.webkitRelativePath || f.name).split('/').join('---');
+    f.relPath = `${Date.now()}_${FOLDER_PREFIX}${rel}`;
+    return f;
+  });
+  await uploadBatch(tagged);
 }
 
 refresh();
